@@ -788,15 +788,41 @@ const TOOLS = [
 ];
 const FUNCTIONS = TOOLS.map(({name, description, parameters}) => parameters ? {name, description, parameters} : {name, description});
 
-async function gemini(contents, signal) {
+// Free models get overloaded at busy times. If one is busy, gone or too slow, Rose quietly tries the next.
+const FALLBACK_MODELS = ['gemini-3.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-2.5-flash'];
+const RETRYABLE = e => e.timeout || [404, 500, 502, 503, 504].includes(e.status);
+async function geminiOnce(model, contents, signal) {
   const body = {systemInstruction: {parts: [{text: systemPrompt()}]}, contents, tools: [{functionDeclarations: FUNCTIONS}]};
   let url, headers = {'Content-Type': 'application/json'};
-  if (CONFIG.PROXY_URL) { url = CONFIG.PROXY_URL; body.model = state.model; }
-  else { url = `${API}/models/${encodeURIComponent(state.model)}:generateContent`; headers['x-goog-api-key'] = state.apiKey; }
-  const res = await fetch(url, {method: 'POST', headers, body: JSON.stringify(body), signal});
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) { const e = new Error((data.error && data.error.message) || 'HTTP ' + res.status); e.status = res.status; throw e; }
-  return data;
+  if (CONFIG.PROXY_URL) { url = CONFIG.PROXY_URL; body.model = model; }
+  else { url = `${API}/models/${encodeURIComponent(model)}:generateContent`; headers['x-goog-api-key'] = state.apiKey; }
+  const ac = new AbortController(); let timedOut = false;
+  const onAbort = () => ac.abort(); signal.addEventListener('abort', onAbort);
+  const timer = setTimeout(() => { timedOut = true; ac.abort(); }, 25000);
+  try {
+    const res = await fetch(url, {method: 'POST', headers, body: JSON.stringify(body), signal: ac.signal});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { const e = new Error((data.error && data.error.message) || 'HTTP ' + res.status); e.status = res.status; throw e; }
+    return data;
+  } catch (e) {
+    if (timedOut && !signal.aborted) { const t = new Error(model + ' took too long'); t.timeout = true; throw t; }
+    throw e;
+  } finally { clearTimeout(timer); signal.removeEventListener('abort', onAbort); }
+}
+async function gemini(contents, signal) {
+  const order = [state.model, ...FALLBACK_MODELS.filter(m => m !== state.model)];
+  let lastErr;
+  for (const model of order) {
+    try {
+      const data = await geminiOnce(model, contents, signal);
+      if (model !== state.model) { sys(`${state.model} is busy, switched to ${model}`, 'INFO'); state.model = model; store.set('model', model); }
+      return data;
+    } catch (e) {
+      if (signal.aborted || !RETRYABLE(e)) throw e;
+      lastErr = e;
+    }
+  }
+  throw lastErr;
 }
 const MOOD_RE = /\[(neutral|happy|excited|thinking|surprised|sad|smug|focused|annoyed)\]\s*/gi;
 
@@ -849,7 +875,8 @@ async function askRose(userText) {
       Sound.err();
       const msg = String(e.message || e);
       let line;
-      if (e.status === 429) line = '[sad] I hit Gemini’s free rate limit. Wait a minute and try again. If the daily quota ran out, it resets at midnight Pacific time.';
+      if (e.status === 503 || e.timeout) line = '[sad] Every free Gemini model is overloaded right now. Give it a minute and try again.';
+      else if (e.status === 429) line = '[sad] I hit Gemini’s free rate limit. Wait a minute and try again. If the daily quota ran out, it resets at midnight Pacific time.';
       else if (e.status === 400 && /api key/i.test(msg)) { line = '[sad] Google says that API key isn’t valid. Press AI KEY and paste a fresh one.'; openKey(); }
       else if (e.status === 403) { line = '[sad] Google refused the request (403). Check the key is from AI Studio and the Gemini API is enabled for it.'; openKey(); }
       else if (e.status === 404) { line = `[sad] The model "${state.model}" wasn’t found. Pick another one under AI KEY.`; openKey(); }
