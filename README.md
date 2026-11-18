@@ -4,7 +4,7 @@ A retro terminal AI assistant with a face that's actually alive. Rose blinks, fo
 
 ![Rose Terminal screenshot](docs/screenshot.png)
 
-**Live demo:** https://osi27i.github.io/rose-terminal/ *(update this link after you deploy)*
+**Live demo:** https://osi27i.github.io/rose-terminal/
 
 ## What she can do
 
@@ -34,6 +34,22 @@ It's one HTML file with no build step and no dependencies.
 The key is saved in your browser's localStorage and is only sent to Google. It never touches this repo.
 
 > Note: on Gemini's free tier, Google may use your chats to improve its products, and there's a daily request limit. Don't paste anything private.
+
+## When Gemini is busy: automatic model fallback
+
+Free Gemini models get overloaded at busy times. While recording the demo, the newest Flash models kept returning `503 This model is currently experiencing high demand`, or the request just hung with no answer.
+
+So Rose now handles it herself:
+
+- If a model fails with 500, 502, 503, 504 or 404 (model retired), she moves on to the next free model on her list: `gemini-3.5-flash-lite`, `gemini-flash-lite-latest`, `gemini-3.1-flash-lite`, `gemini-flash-latest`, `gemini-2.5-flash`.
+- Every request has a **10 second timeout**. A model that hangs gets skipped instead of leaving you staring at a blinking cursor.
+- Once a model works, she keeps using it, so the next messages are fast. A small note in the chat shows the switch, for example `gemini-3.8-flash is busy, switched to gemini-3.5-flash-lite`.
+- If every model is down, she says so in plain words instead of showing a raw API error.
+- Rate limits (429) and bad keys are not retried, since another model would not fix those.
+
+### How it got faster
+
+The first version waited **25 seconds** before giving up on a hanging model, so the first reply on a busy day could take almost half a minute. Testing showed the Lite models answer in about **1 to 3 seconds**, so 25 seconds was mostly wasted waiting. I cut the timeout to **10 seconds**, which means the worst-case first reply on a busy day dropped from about 25s to about 10s, and normal replies are unchanged.
 
 ## Commands
 
@@ -80,6 +96,13 @@ index.html        the whole app
 worker/worker.js  optional proxy for a public demo
 docs/             screenshots
 ```
+
+## Changelog
+
+- **v1.1.2:** backup model timeout lowered from 25s to 10s, so busy-day replies come much faster
+- **v1.1.1:** automatic fallback to other free Gemini models when one is overloaded, retired or too slow
+- **v1.1:** switched the brain to the free Gemini API with function calling for tasks, timer and theme
+- **v1.0:** first version: LED face, moods, digital rain, Web Audio sounds, tasks and focus timer
 
 ## Author
 
